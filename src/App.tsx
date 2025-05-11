@@ -1,34 +1,11 @@
-/* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-return */
-import { FC, useCallback, useRef } from 'react'
+/* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-assignment */
+import { FC, useCallback, useEffect, useRef } from 'react'
 
 import {
 	CharacterSet,
 	PrinterTypes,
 	ThermalPrinter,
 } from 'node-thermal-printer'
-
-const CreateInterceptor = <T extends object>(target: T) => {
-	const handler: ProxyHandler<T> = {
-		get: (target, prop) => {
-			const originalValue = (target as any)[prop]
-
-			if (typeof originalValue === 'function') {
-				return function (...args: any[]) {
-					console.log(
-						`Function "${prop as any}" called with arguments:`,
-						args,
-					)
-					const result = originalValue.apply(target, args)
-					console.log(`Function "${prop as any}" returned:`, result)
-					return result
-				}
-			}
-			return originalValue
-		},
-	}
-
-	return new Proxy(target, handler)
-}
 
 class WebUsbPrinterInterface {
 	constructor(
@@ -49,8 +26,12 @@ class WebUsbPrinterInterface {
 	}
 }
 
+const interfaceNumber = 0
+
 const App: FC = () => {
 	const PrinterRef = useRef<ThermalPrinter>(null)
+	const DeviceRef = useRef<USBDevice>(null)
+	const IsFirstLoadRef = useRef<boolean>(true)
 
 	const Print = useCallback(async () => {
 		const printer = PrinterRef.current
@@ -98,87 +79,170 @@ const App: FC = () => {
 		printer.newLine()
 		printer.newLine()
 
-		console.log('Buffer', printer.getBuffer())
-		console.log('Text', printer.getText())
-
 		await printer.execute()
 	}, [])
 
-	const SelectDevice = useCallback(async () => {
-		const device = CreateInterceptor(
-			await navigator.usb.requestDevice({
-				filters: [{ classCode: 0x07 }],
-			}),
-		)
+	const DisconnectDevice = useCallback(async () => {
+		const device = DeviceRef.current
 
-		const interfaceNumber = 0
+		if (!device) return
 
-		await device.open()
+		if (device.opened) {
+			try {
+				// Check if the specific interface was claimed before trying to release
+				const ifaceToRelease = device.configuration?.interfaces.find(
+					iface =>
+						iface.interfaceNumber === interfaceNumber &&
+						iface.claimed,
+				)
 
-		if (!device.configuration) {
-			await device.selectConfiguration(1) // Or the appropriate config number
-			console.log('Configuration selected.')
-		} else {
-			console.log(
-				'Configuration already selected:',
-				device.configuration.configurationValue,
-			)
-		}
+				if (ifaceToRelease) {
+					await device.releaseInterface(interfaceNumber)
 
-		await device.claimInterface(interfaceNumber)
-		console.log(`Interface ${interfaceNumber} claimed.`)
+					console.log(
+						`Interface ${interfaceNumber} released during error handling.`,
+					)
+				}
+			} catch (releaseError) {
+				console.warn(
+					'Error releasing interface during cleanup:',
+					releaseError,
+				)
+			}
 
-		// 3. Find an OUT endpoint on the claimed interface
-		// The claimed interface will be in device.configuration.interfaces
-		const currentInterface = device.configuration?.interfaces.find(
-			iface => iface.interfaceNumber === interfaceNumber && iface.claimed,
-		)
+			try {
+				await device.close()
 
-		if (!currentInterface) {
-			console.error(
-				`Could not find claimed interface ${interfaceNumber}. This should not happen.`,
-			)
-			await device.releaseInterface(interfaceNumber) // Attempt cleanup
-			await device.close()
-			return
-		}
-
-		// Use the current alternate setting of the interface
-		const alternateInterface = currentInterface.alternate
-		let outEndpoint = null
-
-		for (const endpoint of alternateInterface.endpoints) {
-			if (endpoint.direction === 'out') {
-				// You might also want to check endpoint.type, e.g., "bulk" or "interrupt"
-				// For example: if (endpoint.direction === "out" && endpoint.type === "bulk")
-				outEndpoint = endpoint
-				break // Found an OUT endpoint, use the first one
+				console.log('Device closed during error handling.')
+			} catch (closeError) {
+				console.warn('Error closing device during cleanup:', closeError)
 			}
 		}
+	}, [])
 
-		if (!outEndpoint) {
-			console.error(
-				`No OUT endpoint found on interface ${interfaceNumber}, alternate setting ${alternateInterface.alternateSetting}.`,
+	const ConfigureDevice = useCallback(async () => {
+		const device = DeviceRef.current
+
+		if (!device) return
+
+		try {
+			await device.open()
+
+			if (!device.configuration) {
+				await device.selectConfiguration(1)
+			}
+
+			await device.claimInterface(interfaceNumber)
+
+			const currentInterface = device.configuration?.interfaces.find(
+				iface =>
+					iface.interfaceNumber === interfaceNumber && iface.claimed,
 			)
-			console.log(
-				'Available endpoints on this alternate setting:',
-				alternateInterface.endpoints,
+
+			if (!currentInterface) {
+				console.error(
+					`Could not find claimed interface ${interfaceNumber}. This should not happen.`,
+				)
+
+				await device.releaseInterface(interfaceNumber)
+				await device.close()
+
+				return
+			}
+
+			const alternateInterface = currentInterface.alternate
+			const outEndpoint = alternateInterface.endpoints.find(
+				endpoint =>
+					endpoint.direction === 'out' && endpoint.type === 'bulk',
 			)
-			await device.releaseInterface(interfaceNumber)
-			await device.close()
-			return
+
+			if (!outEndpoint) {
+				console.error(
+					`No OUT endpoint found on interface ${interfaceNumber}, alternate setting ${alternateInterface.alternateSetting}.`,
+				)
+				console.log(
+					'Available endpoints on this alternate setting:',
+					alternateInterface.endpoints,
+				)
+
+				await device.releaseInterface(interfaceNumber)
+				await device.close()
+
+				return
+			}
+
+			return outEndpoint.endpointNumber
+		} catch (error) {
+			console.error('WebUSB Error:', error)
+
+			// Attempt to clean up if device is open and an interface might be claimed
+			await DisconnectDevice()
 		}
+	}, [DisconnectDevice])
+
+	const ConfigurePrinter = useCallback((endpointNumber: number) => {
+		if (!DeviceRef.current) return
 
 		PrinterRef.current = new ThermalPrinter({
 			type: PrinterTypes.EPSON,
 			interface: new WebUsbPrinterInterface(
-				device,
-				outEndpoint.endpointNumber,
+				DeviceRef.current,
+				endpointNumber,
 			) as any,
 			characterSet: CharacterSet.PC852_LATIN2,
 			width: 32,
 		})
 	}, [])
+
+	const SelectDevice = useCallback(async () => {
+		const device = await navigator.usb.requestDevice({
+			filters: [{ classCode: 0x07 }],
+		})
+
+		if (DeviceRef.current !== device) {
+			await DisconnectDevice()
+		}
+
+		DeviceRef.current = device
+
+		const endpointNumber = await ConfigureDevice()
+
+		if (!endpointNumber) return
+
+		ConfigurePrinter(endpointNumber)
+	}, [ConfigureDevice, ConfigurePrinter, DisconnectDevice])
+
+	useEffect(() => {
+		if (!IsFirstLoadRef.current) return
+
+		IsFirstLoadRef.current = false
+
+		const main = async () => {
+			const devices = await navigator.usb.getDevices()
+
+			const device = devices[0]
+
+			if (!device) return
+
+			DeviceRef.current = device
+
+			const endpointNumber = await ConfigureDevice()
+
+			if (!endpointNumber) return
+
+			ConfigurePrinter(endpointNumber)
+		}
+
+		main().catch((error: unknown) => {
+			console.log('Init device error', error)
+		})
+
+		return () => {
+			DisconnectDevice().catch((error: unknown) => {
+				console.log('Init device disconnect error', error)
+			})
+		}
+	}, [ConfigureDevice, ConfigurePrinter, DisconnectDevice])
 
 	return (
 		<div>
