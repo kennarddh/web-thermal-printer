@@ -59,6 +59,7 @@
 		"vite-plugin-svgr": "^4.3.0"
 	},
 	"dependencies": {
+		"jimp": "^1.6.0",
 		"node-thermal-printer": "^4.4.5",
 		"react": "^19.1.0",
 		"react-dom": "^19.1.0",

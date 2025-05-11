@@ -1,6 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-assignment */
 import { FC, useCallback, useEffect, useRef } from 'react'
 
+import { Jimp } from 'jimp'
 import {
 	CharacterSet,
 	PrinterTypes,
@@ -40,46 +41,58 @@ const App: FC = () => {
 
 		if (!printer) return
 
-		printer.clear()
+		try {
+			printer.clear()
 
-		printer.alignCenter()
-		printer.println('Store Name')
-		printer.println('City')
-		printer.println('Province')
-		printer.println('Phone Number')
+			const image = await Jimp.read('/logo.png')
 
-		printer.newLine()
+			image.greyscale().resize({ w: 300, h: 300 })
 
-		printer.alignLeft()
-		printer.println('17/11/2024 10:20')
+			const buffer = await image.getBuffer('image/png')
 
-		printer.drawLine()
+			await printer.printImageBuffer(buffer)
 
-		printer.println('1. Product Name')
-		printer.leftRight('   1x Price', 'Price')
+			printer.alignCenter()
+			printer.println('Store Name')
+			printer.println('City')
+			printer.println('Province')
+			printer.println('Phone Number')
 
-		printer.drawLine()
+			printer.newLine()
 
-		printer.alignLeft()
-		printer.println('Products: 1')
-		printer.println('Items: 1')
+			printer.alignLeft()
+			printer.println('17/11/2024 10:20')
 
-		printer.drawLine()
+			printer.drawLine()
 
-		printer.leftRight('Total', 'Price')
-		printer.leftRight('Cash', 'Price')
-		printer.leftRight('Change', 'Price')
+			printer.println('1. Product Name')
+			printer.leftRight('   1x Price', 'Price')
 
-		printer.drawLine()
-		printer.newLine()
+			printer.drawLine()
 
-		printer.alignCenter()
-		printer.println('Thank You')
+			printer.alignLeft()
+			printer.println('Products: 1')
+			printer.println('Items: 1')
 
-		printer.newLine()
-		printer.newLine()
+			printer.drawLine()
 
-		await printer.execute()
+			printer.leftRight('Total', 'Price')
+			printer.leftRight('Cash', 'Price')
+			printer.leftRight('Change', 'Price')
+
+			printer.drawLine()
+			printer.newLine()
+
+			printer.alignCenter()
+			printer.println('Thank You')
+
+			printer.newLine()
+			printer.newLine()
+
+			await printer.execute()
+		} catch (error) {
+			console.error('Print error', error)
+		}
 	}, [])
 
 	const DisconnectDevice = useCallback(async () => {
